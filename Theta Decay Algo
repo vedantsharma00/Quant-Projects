@@ -1,0 +1,194 @@
+# Need to fix margin call and insufficient buying power error
+# Need to investigate why WMT was held for so long
+
+from AlgorithmImports import *
+
+class testonestock(QCAlgorithm):
+    def Initialize(self):
+        self.SetAccountCurrency("USD")
+        self.SetStartDate(2019, 1, 1)
+        self.SetEndDate(2023, 12, 30)
+        self.SetCash(100000)
+        self.market = Market.USA
+        self.stock_symbol_list = [
+            "AAPL", "AAL", "F", "VZ", "C", "WMT",
+            "COST", "XOM", "K", "AMZN", "PEP", "SBUX", "META"
+        ]
+        self.stock_dict = {}
+        self.bollinger_bands = {}
+        self.bollinger_band_period = 20
+        self.minimum_delta = 0.8
+        self.target_allocation = 0.04
+        self.option_positions_open = {symbol: False for symbol in self.stock_symbol_list}
+        self.stop_loss_threshold = 0.05
+        self.cool_down_period = timedelta(weeks=1)
+        self.last_trade_date = {}
+        self.stock_purchase_price = {}
+
+        for stock in self.stock_symbol_list:
+            equity = self.AddEquity(stock, Resolution.Daily, self.market).Symbol
+            self.stock_dict[stock] = equity
+            self.bollinger_bands[stock] = self.BB(equity, 20, 2, MovingAverageType.Simple, Resolution.Daily)
+        
+        self.SetBenchmark("SPY")
+        # self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(10, 0), self.StartTrading)
+        # self.Schedule.On(self.DateRules.EveryDay(), self.TimeRules.At(15, 10), self.StopTrading)
+        self.Log("Initialization Complete")
+
+    # def StartTrading(self):
+    #     self.Log("Starting trading window at 12:00 PM")
+    #     self.trade_window_open = True
+
+    # def StopTrading(self):
+    #     self.Log("Stopping trading window at 12:10 PM")
+    #     self.trade_window_open = False
+
+    def OnData(self, data):
+
+        # QuantConnect's `self.Time` is in UTC.
+        utc_hour = self.Time.hour
+
+        eastern_hour = (utc_hour - 4) % 24  # Assuming daylight saving time (EDT)
+
+        #Check if the current time is between 10 AM and 3 PM ET
+        if 11 <= eastern_hour < 15:
+        # Execute trades
+
+        # if not self.trade_window_open:
+        #     return
+            # self.log("point 1")
+
+            for stock in self.stock_symbol_list:
+                if stock not in data.Bars:
+                    continue
+
+                indicator_data_point = IndicatorDataPoint(data.Bars[self.stock_dict[stock]].EndTime, data.Bars[self.stock_dict[stock]].Close)
+                self.bollinger_bands[stock].Update(indicator_data_point)
+                lower_band = self.bollinger_bands[stock].LowerBand.Current.Value
+                middle_band = self.bollinger_bands[stock].MiddleBand.Current.Value
+                upper_band = self.bollinger_bands[stock].UpperBand.Current.Value
+                
+                if stock in self.stock_purchase_price:
+                    current_price = data.Bars[self.stock_dict[stock]].Close
+                    purchase_price = self.stock_purchase_price[stock]
+                    drop_percentage = (purchase_price - current_price) / purchase_price
+
+                    if drop_percentage >= self.stop_loss_threshold:
+                        for option_symbol in self.Portfolio:
+                            security = self.Securities[option_symbol.Key]
+                            if security.Type == SecurityType.Option and security.Underlying == self.stock_dict[stock]:
+                                self.Liquidate(option_symbol.Key)
+                                self.Log(f"Stop loss triggered. Liquidated option position for {option_symbol.Key}")
+                                self.option_positions_open[stock] = False
+
+                        self.last_trade_date[self.stock_dict[stock]] = self.Time
+                        self.stock_purchase_price.pop(stock, None)
+                        self.Log(f"Stopped trading options for {stock} for 1 week due to 5% drop")
+                        continue
+
+                if self.stock_dict[stock] in self.last_trade_date:
+                    last_trade_time = self.last_trade_date[self.stock_dict[stock]]
+                    if self.Time - last_trade_time < self.cool_down_period:
+                        self.Log(f"Cool-down period active for {stock}. No trading.")
+                        continue
+                    
+                if indicator_data_point.Value > middle_band or lower_band == middle_band or middle_band == upper_band:
+                    continue
+
+                option = self.AddOption(self.stock_dict[stock], Resolution.Minute, self.market)
+                option.SetFilter(lambda option_filter_universe: option_filter_universe.CallsOnly().Strikes(-4, 10).Expiration(27, 300))
+                long_contract_traded = False
+                if self.option_positions_open[stock]:
+                    self.Log(f"Stock {stock} has open options position")
+                    continue
+
+                if data.OptionChains.ContainsKey(option.Symbol):
+                    option_chain = data.OptionChains[option.Symbol]
+                    if option_chain is None:
+                        self.Log("Option chain is empty.")
+                        continue
+
+                    call_contracts = [contract for contract in option_chain if contract.Right == OptionRight.Call and contract.Expiry.date() > self.Time.date()]
+                    call_contracts_long = sorted(call_contracts, key=lambda x: (x.Strike, -x.Expiry.timestamp()))
+                    long_contract = call_contracts_long[0]
+                    self.Log(f"Best contract: Strike {long_contract.Strike}, Expiry {long_contract.Expiry}")
+                        
+                    if long_contract.Symbol in data.QuoteBars:
+                        quote_bar = data.QuoteBars[long_contract.Symbol]
+                        if quote_bar is not None and quote_bar.Bid is not None and quote_bar.Ask is not None:
+                            bid_price = quote_bar.Bid.Close
+                            ask_price = quote_bar.Ask.Close
+                            mid_price = (bid_price + ask_price) / 2
+                            current_allocation = self.Portfolio[long_contract.Symbol].HoldingsValue / self.Portfolio.TotalPortfolioValue
+                            
+                        if current_allocation < self.target_allocation:
+                            max_investment_value = self.Portfolio.TotalPortfolioValue * self.target_allocation
+                            remaining_allocation_value = max_investment_value - self.Portfolio[long_contract.Symbol].HoldingsValue
+                            quantity = int(remaining_allocation_value / (mid_price * 100))
+                            if quantity > 0:
+                                self.market_order(long_contract.Symbol, quantity)
+                                self.Log(f"Placed limit order to buy option at {ask_price} and quantity {quantity}")
+                                self.stock_purchase_price[stock] = self.Securities[self.stock_dict[stock]].Price
+                                self.option_positions_open[stock] = True
+                                long_contract_traded = True
+                            else:
+                                self.Log("Already allocated enough to long option")
+                        else:
+                            self.Log("Long option exceeds 10 percent of portfolio allocation")
+                    else:
+                        self.Log("Bid or ask price not available for the best contract")
+
+                    call_contracts_short = sorted(call_contracts, key=lambda x: (-x.Strike, x.Expiry.timestamp()))
+                    short_contract = call_contracts_short[0]
+                    self.Log(f"Best contract: Strike {short_contract.Strike}, Expiry {short_contract.Expiry}")
+                    
+                    if short_contract.Symbol in data.QuoteBars:
+                        quote_bar = data.QuoteBars[short_contract.Symbol]
+                        if quote_bar is not None and quote_bar.Bid is not None and quote_bar.Ask is not None:
+                            bid_price = quote_bar.Bid.Close
+                            ask_price = quote_bar.Ask.Close
+                            mid_price = (bid_price + ask_price) / 2
+                            current_allocation = self.Portfolio[short_contract.Symbol].HoldingsValue / self.Portfolio.TotalPortfolioValue
+                            
+                        if current_allocation < self.target_allocation and long_contract_traded:
+                            if quantity > 0:
+                                self.market_order(short_contract.Symbol, -quantity)
+                                self.Log(f"Placed limit order to sell option at {mid_price} and quantity {quantity}")
+                                self.option_positions_open[stock] = True
+                                self.stock_purchase_price[stock] = self.Securities[self.stock_dict[stock]].Price
+                            else:
+                                self.Log("Already allocated enough to short option")
+                        else:
+                            self.Log("Short option exceeds 10 percent of portfolio allocation")
+                    else:
+                        self.Log("Bid or ask price not available for the best contract")
+        else:
+            # self.log("Time is not for trading.")
+            return
+
+    def OnOrderEvent(self, orderEvent):
+        if orderEvent.Status == OrderStatus.Filled:
+            security = self.Securities[orderEvent.Symbol]
+            self.Log(f"Order filled: Symbol: {orderEvent.Symbol}, Direction: {orderEvent.Direction}, FillPrice: {orderEvent.FillPrice}, Quantity: {orderEvent.Quantity}")
+            
+            if security is not None and security.Type == SecurityType.Equity and self.Portfolio[orderEvent.Symbol].Quantity < 0:
+                self.Liquidate(orderEvent.Symbol)
+                self.Log(f"Liquidated negative stock position: {orderEvent.Symbol}")
+                
+                for option_symbol in self.Portfolio:
+                    option_security = self.Securities[option_symbol.Key]
+                    if option_security.Type == SecurityType.Option and option_security.Underlying.Symbol == security.Symbol:
+                        if option_security.Right == OptionRight.Call:
+                            self.Liquidate(option_symbol.Key)
+                            self.Log(f"Liquidated corresponding long option position: {option_symbol.Key}")
+                            for stock in self.stock_symbol_list:
+                                if stock == orderEvent.Symbol:
+                                    self.option_positions_open[stock] = False
+
+            if hasattr(self, 'short_contract') and self.short_contract.Symbol == orderEvent.Symbol:
+                self.Log(f"Short contract order filled, symbol: {orderEvent.Symbol}")
+                
+                if hasattr(self, 'long_contract') and self.long_contract is not None and self.Portfolio[self.long_contract.Symbol].Invested:
+                    self.Liquidate(self.long_contract.Symbol)
+                    self.Log(f"Liquidated corresponding long contract")
+

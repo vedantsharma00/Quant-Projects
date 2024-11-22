@@ -1,0 +1,82 @@
+## Aim is approx same sharpe and sortino as the index but more returns.
+## Next aim is higher sharpe and sortino due to convexity from long options
+## Also, use multiple stocks for the covered call strategy and double down as needed- mix with stock scraping algo
+#### CODE WORKS DO NOT TOUCH
+from AlgorithmImports import *
+
+class SPYCoveredCallAlgorithm(QCAlgorithm):
+    def Initialize(self):
+        self.SetStartDate(2019, 1, 1)
+        self.SetEndDate(2023, 12, 31)
+        self.SetCash(100000)
+        
+        # Add SPY equity
+        self.spy = self.AddEquity("SPY", Resolution.Minute).Symbol
+        
+        # Track whether a short option position is open
+        self.shortOptionOpen = False
+        self.SetBenchmark(self.AddEquity("SPY").Symbol)
+
+    def OnData(self, data: Slice):
+        # Add SPY options
+        option = self.AddOption(self.spy, Resolution.Minute)
+        option.SetFilter(7, 7, timedelta(2), timedelta(5))  # Adjusted filter to use simpler method
+
+        # Log current portfolio status
+        # self.Debug(f"Current Cash: {self.Portfolio.Cash}, SPY Quantity: {self.Portfolio[self.spy].Quantity}, Short Option Open: {self.shortOptionOpen}")
+        
+        # If a short option position is already open, wait for expiry
+        if self.shortOptionOpen:
+            # self.Debug("Already holding a short option position. Waiting for expiry.")
+            return
+        
+        # Check if we hold SPY shares
+        spyQuantity = self.Portfolio[self.spy].Quantity
+        
+        if spyQuantity <= 0.5 * self.Portfolio.TotalPortfolioValue:
+            spyPrice = self.Securities[self.spy].Price
+            available_cash = self.Portfolio.Cash
+            quantity_to_buy = int(available_cash // spyPrice)
+            
+            if quantity_to_buy > 0:
+                self.MarketOrder(self.spy, quantity_to_buy)
+                self.Debug(f"Bought {quantity_to_buy} shares of SPY.")
+                spyQuantity = self.Portfolio[self.spy].Quantity
+        
+        # Check for available option chains
+        if data.OptionChains.ContainsKey(option.Symbol):
+            option_chain = data.OptionChains[option.symbol]
+            call_contracts = [
+                contract for contract in option_chain 
+                if contract.Right == OptionRight.Call and contract.Expiry > self.Time and contract.Strike > self.Securities[self.spy].Price + 5
+            ]
+
+            if not call_contracts:
+                # self.Debug("No call contracts available.")
+                return
+
+            # Sort by expiration first, then by strike price (strike price 5 strikes above current price)
+            call_contracts = sorted(call_contracts, key=lambda x: (x.Expiry, x.Strike))
+
+            selected_contract = call_contracts[0]
+            self.shortOption = selected_contract.Symbol
+            
+            # Calculate the number of contracts to sell
+            quantity = spyQuantity // 100
+            if quantity > 0:
+                self.MarketOrder(self.shortOption, -quantity)
+                self.shortOptionOpen = True  # Set the flag when a position is opened
+                self.Debug(f"Sold {quantity} contracts of {self.shortOption} at Strike {selected_contract.Strike}, Expiry {selected_contract.Expiry}, Price {selected_contract.BidPrice}")
+            else:
+                self.Debug("Not enough SPY shares to sell any contracts.")
+        else:
+            self.Debug("No option chains available for SPY.")
+
+    def OnOrderEvent(self, orderEvent):
+        if orderEvent.Status == OrderStatus.Filled:
+            if orderEvent.Direction == OrderDirection.Sell:
+                self.Debug(f"Order filled. Sold {orderEvent.FillQuantity} of {orderEvent.Symbol}")
+            elif orderEvent.Direction == OrderDirection.Buy:
+                # Option expired or was exercised
+                self.shortOptionOpen = False  # Reset the flag when the option is closed
+                self.Debug("Short option expired or was exercised.")

@@ -1,0 +1,77 @@
+from AlgorithmImports import *
+
+class StockScrapingAlgorithm(QCAlgorithm):
+    def Initialize(self):
+        self.SetStartDate(2019, 1, 1)
+        self.SetEndDate(2023, 12, 30)
+        self.SetCash(100000)  # Starting cash
+        
+        self.stock_symbols = [
+            "AAPL", "MSFT", "GOOG", "AMZN", "TSLA", 
+            "META", "NVDA", "NFLX", "AAL", "DAL",
+            "XOM", "CVX", "PEP", "KO", "F", 
+            "SBUX", "MCD", "T", "DIS", "V"
+        ]
+        
+        # self.SetBenchmark("SPY")
+        
+        self.holdings = {}
+        self.initialized_cash = False
+
+        for symbol in self.stock_symbols:
+            equity = self.AddEquity(symbol, Resolution.Daily)
+            equity.SetLeverage(2)  # Set leverage to 2x
+            self.holdings[symbol] = {'initial_price': 0, 'quantity': 0}
+
+    def OnData(self, data):
+        if not self.initialized_cash:
+            self.InitializePositions(data)
+        
+        for symbol in self.stock_symbols:
+            if symbol in data and data[symbol] is not None:
+                current_price = data[symbol].Price
+                holding = self.holdings[symbol]
+                
+                # Calculate the average price of the holding
+                avg_price = holding['initial_price']
+                
+                # Check for profit or loss conditions
+                if avg_price > 0:
+                    profit_percent = (current_price - avg_price) / avg_price
+                    
+                    if profit_percent >= 0.05:
+                        self.Liquidate(symbol)
+                        self.Debug(f"Sold {symbol} at {current_price} for a profit of {profit_percent * 100}%")
+                    elif profit_percent <= -0.01:
+                        self.DoubleDown(symbol, current_price)
+
+
+    def InitializePositions(self, data):
+        initial_cash = self.Portfolio.Cash  # Use 50% of the initial cash
+        allocation = initial_cash / len(self.stock_symbols)
+        
+        for symbol in self.stock_symbols:
+            if symbol in data:
+                price = data[symbol].Price
+                quantity = int(allocation / price)
+                self.SetHoldings(symbol, 0.50 / len(self.stock_symbols))
+                
+                # Record the initial price and quantity
+                self.holdings[symbol] = {'initial_price': price, 'quantity': quantity}
+        
+        self.initialized_cash = True
+
+    def DoubleDown(self, symbol, current_price):
+        if self.Portfolio.Cash > 0:
+            current_quantity = self.holdings[symbol]['quantity']
+            additional_quantity = current_quantity  # Double down by buying the same quantity
+            total_cost = additional_quantity * current_price
+            
+            if total_cost <= self.Portfolio.Cash:
+                self.MarketOrder(symbol, additional_quantity)
+                new_quantity = current_quantity + additional_quantity
+                avg_price = (self.holdings[symbol]['initial_price'] * current_quantity + total_cost) / new_quantity
+                
+                self.holdings[symbol]['initial_price'] = avg_price
+                self.holdings[symbol]['quantity'] = new_quantity
+                self.Debug(f"Doubled down on {symbol} at {current_price}. New avg price: {avg_price:.2f}")

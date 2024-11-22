@@ -1,0 +1,77 @@
+
+from AlgorithmImports import *
+import numpy as np
+import pandas as pd
+from statsmodels.tsa.stattools import adfuller
+from scipy.stats import linregress
+
+class PairsTradingAlgorithm(QCAlgorithm):
+    
+    def Initialize(self):
+        self.SetStartDate(2019, 1, 1)
+        self.SetEndDate(2023, 12, 31)
+        self.SetCash(100000)
+        # Choose stocks
+        self.symbol1 = self.AddEquity("AAL", Resolution.Daily).Symbol
+        self.symbol2 = self.AddEquity("JETS", Resolution.Daily).Symbol
+        self.SetBenchmark("SPY")
+        
+        self.lookback = 30
+        self.threshold = 1.5
+        
+        self.pair = None
+        self.window = RollingWindow[float](self.lookback)
+        
+    def OnData(self, data):
+        if not (data.Bars.ContainsKey(self.symbol1) and data.Bars.ContainsKey(self.symbol2)):
+            return
+
+        # Get the price history
+        history = self.History([self.symbol1, self.symbol2], self.lookback + 1, Resolution.Daily)
+        if history.empty:
+            return
+        
+        prices1 = history.loc[self.symbol1]['close']
+        prices2 = history.loc[self.symbol2]['close']
+        
+        correlation = np.corrcoef(prices1, prices2)[0, 1]
+        self.log(f"Correlation between {self.symbol1} and {self.symbol2}: {correlation}")
+    
+        # Calculate the hedge ratio using linear regression
+        slope, intercept, r_value, p_value, std_err = linregress(prices2, prices1)
+        
+        # Calculate the spread
+        spread = prices1 - slope * prices2
+        
+        # Perform the ADF test on the spread
+        adf_result = adfuller(spread)
+        p_value = adf_result[1]
+        self.log(adf_result)
+        self.log(p_value)
+        # Only trade if the spread is stationary
+        if p_value < 0.05:
+            zscore = (spread[-1] - np.mean(spread)) / np.std(spread)
+            
+            if zscore > self.threshold:
+                # Short the spread
+                if self.pair is None or self.pair != "short":
+                    self.SetHoldings(self.symbol1, -0.5)
+                    self.SetHoldings(self.symbol2, 0.5)
+                    self.pair = "short"
+            
+            elif zscore < -self.threshold:
+                # Long the spread
+                if self.pair is None or self.pair != "long":
+                    self.SetHoldings(self.symbol1, 0.5)
+                    self.SetHoldings(self.symbol2, -0.5)
+                    self.pair = "long"
+            
+            else:
+                # Close positions if within threshold
+                self.Liquidate()
+                self.pair = None
+
+
+
+
+
