@@ -1,0 +1,3 @@
+Summary: I took some lagged return data, performed exploratory data analysis, created trading strategies from it, and backtested them using portfolio sort.
+
+Note: This is incomplete. I found my standard errors to be underestimated due to serial correlation in errors due to time (because of how i perform cross sectional regressions). I will change it to implement the regressions in the style of Fama-MacBeth to avoid that problem.
