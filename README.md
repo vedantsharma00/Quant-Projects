@@ -4,8 +4,3 @@ I hope you like going through my repository and if you have any questions or fee
 
 Thank you for reading this!
 Vedant 
-
-
-=======
-# Quant-Projects
->>>>>>> 4a6b0f0 (Initial commit)
