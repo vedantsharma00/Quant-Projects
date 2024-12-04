@@ -1,0 +1,1 @@
+Context for this: I had an assignment where I was supposed to critique a research paper briefly - here is my output.
