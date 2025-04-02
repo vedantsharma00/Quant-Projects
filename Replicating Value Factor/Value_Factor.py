@@ -7,10 +7,12 @@ Created on Wed Mar 26 18:14:11 2025
 """
 '''
 Instructions on how to run this file
-Step 1 - Change file paths where needed
-Step 2 - Click Run All
-Step 3 - Input your WRDS username and password
-Step 4 - Done!
+Step 1 - Download value factor from AQR for comparison:
+    https://www.aqr.com/Insights/Datasets/Value-and-Momentum-Everywhere-Factors-Monthly
+Step 2 - Change file paths where needed
+Step 3 - Click Run All
+Step 4 - Input your WRDS username and password
+Step 5 - Done!
 '''
 
 import wrds
@@ -268,11 +270,10 @@ monthly_portfolio_returns.columns = ["eom", "portfolio_returns"]
 monthly_portfolio_returns["cumulative_returns"] =  (1+monthly_portfolio_returns["portfolio_returns"]).cumprod()
 
 #%%
-# import actual factor returns. Has been cleaned in excel
+# Import actual factor returns. Has been cleaned in excel
 actual = pd.read_excel('/Users/vedant/Desktop/BK/Value_Factor/Value and Momentum Everywhere Factors Monthly.xlsx')
 actual["cumulative_returns"] =  (1+actual["VALLS_VME_US90"]).cumprod()
 
-#%%
 #%%
 # Align indexes
 start = max(min(monthly_portfolio_returns["eom"]),min(actual["DATE"]))
@@ -287,7 +288,7 @@ actual = \
     & (actual["DATE"] <= end)]
 
 #%%
-# Plot my factor returnsvs the actual returns
+# Plot my factor returns vs the actual returns
 plt.figure(figsize=(10, 6))
 # Plot my factor returns with circular markers
 plt.plot(monthly_portfolio_returns["eom"], monthly_portfolio_returns["cumulative_returns"], 
